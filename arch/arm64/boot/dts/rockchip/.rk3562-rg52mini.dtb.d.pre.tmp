@@ -1,0 +1,22 @@
+rk3562-rg52mini.o: arch/arm64/boot/dts/rockchip/rk3562-rg52mini.dts \
+ arch/arm64/boot/dts/rockchip/rk3562.dtsi \
+ scripts/dtc/include-prefixes/dt-bindings/clock/rk3562-cru.h \
+ scripts/dtc/include-prefixes/dt-bindings/interrupt-controller/arm-gic.h \
+ scripts/dtc/include-prefixes/dt-bindings/interrupt-controller/irq.h \
+ scripts/dtc/include-prefixes/dt-bindings/phy/phy.h \
+ scripts/dtc/include-prefixes/dt-bindings/power/rk3562-power.h \
+ scripts/dtc/include-prefixes/dt-bindings/pinctrl/rockchip.h \
+ scripts/dtc/include-prefixes/dt-bindings/soc/rockchip-csu.h \
+ scripts/dtc/include-prefixes/dt-bindings/soc/rockchip,boot-mode.h \
+ scripts/dtc/include-prefixes/dt-bindings/soc/rockchip-system-status.h \
+ scripts/dtc/include-prefixes/dt-bindings/suspend/rockchip-rk3562.h \
+ scripts/dtc/include-prefixes/dt-bindings/thermal/thermal.h \
+ arch/arm64/boot/dts/rockchip/rk3562-pinctrl.dtsi \
+ arch/arm64/boot/dts/rockchip/rockchip-pinconf.dtsi \
+ arch/arm64/boot/dts/rockchip/rk3562-linux.dtsi \
+ arch/arm64/boot/dts/rockchip/rk3562-rk817.dtsi \
+ scripts/dtc/include-prefixes/dt-bindings/gpio/gpio.h \
+ arch/arm64/boot/dts/rockchip/rk3562-darkos.dtsi \
+ scripts/dtc/include-prefixes/dt-bindings/display/drm_mipi_dsi.h \
+ scripts/dtc/include-prefixes/dt-bindings/input/input.h \
+ scripts/dtc/include-prefixes/dt-bindings/input/linux-event-codes.h
