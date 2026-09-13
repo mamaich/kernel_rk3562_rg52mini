@@ -68,6 +68,26 @@ Note that `CONFIG_SDIO_BT=y` never compiled in the published tree — an unused
 `bt_char_dev_registered` tripped `-Werror=unused-variable`. With the BlueZ path
 that file is not built, so no change was needed for it.
 
+### Kernel configuration
+
+| Change | Why |
+|--------|-----|
+| `CONFIG_LOCALVERSION="-rg52mini"`, `CONFIG_LOCALVERSION_AUTO` off | Gives this fork a stable, identifiable version string (`5.10.226-rg52mini`) without tying it to the git hash. `LOCALVERSION_AUTO` is a trap in this tree: build artifacts are committed and have no `.gitignore`, so the working tree is dirty after any build and `vermagic` would pick up a `-dirty` suffix that changes from build to build. |
+| `CONFIG_ZRAM_WRITEBACK=y` | Lets zram push idle and incompressible pages out to a backing device. Also what the stock `/vendor/etc/fstab_ext*.cfg` templates need — `zram_backingdev_size` there is a no-op without it. |
+| `arch/arm64/configs/rg52mini_defconfig` regenerated | The old one did not build: it was missing `CONFIG_AUDIT=y`, which `SECURITY_SELINUX` depends on, so Kconfig silently dropped SELinux and the build then died in KernelSU (`CONFIG_SECURITY_SELINUX_SID2STR_CACHE_SIZE is not defined`). The new one is `make savedefconfig` output from the working configuration and reproduces `.config` exactly. |
+
+### Kernel version string
+
+Changing `CONFIG_LOCALVERSION` changes `vermagic`, so **every** module has to be
+rebuilt and shipped together with the Image — `aic8800_bsp`, `aic8800_fdrv` and
+`rk915`. The last one matters on board revision A, where the RK915 is the actual
+Wi-Fi chip; a stale module there means no Wi-Fi at all.
+
+Note the tree also carries an empty `.scmversion`, which short-circuits
+`scripts/setlocalversion` before it ever reaches git. It is a fragile safeguard —
+it disappears on a clean checkout of some trees — so the config does not rely
+on it.
+
 ### Firmware
 
 Bluetooth needs the combo firmware blob `fmacfwbt_8800d80_h_u02.bin` alongside
