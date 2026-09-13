@@ -376,3 +376,20 @@
 		};
 	};
 };
+
+/* ---- Thermal: second safety net above 95 C ----------------------------- */
+
+/* Without rockchip,high-temp the system monitor leaves the threshold at
+ * INT_MAX, so it never engages and the thermal governor regulating to the
+ * 85 C trip is the only limit. Above 95 C this caps the CPU to the operating
+ * points that need no more than 1.1 V, which matters when the ambient itself
+ * is hot -- the device has no heatsink, so outdoors in summer the die has
+ * nowhere to dump heat.
+ *
+ * Values taken from rk3562.dtsi in the Rockchip develop-6.1 branch, where
+ * they were added after the snapshot this tree is based on. The system
+ * monitor in 5.10 already parses both properties. */
+&cpu0_opp_table {
+	rockchip,high-temp = <95000>;
+	rockchip,high-temp-max-volt = <1100000>;
+};
