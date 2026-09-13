@@ -18,20 +18,19 @@
 #include <linux/suspend.h>
 
 
-#ifdef CONFIG_PLATFORM_UBUNTU
+/* RG52 Mini: EmuELEC/CoreELEC userspace is BlueZ, not Android bluedroid.
+ * Force the BlueZ path so aic8800_fdrv registers a real hci0 instead of
+ * the /dev/aicbt_dev char device. */
 #define CONFIG_BLUEDROID        0 /* bleuz 0, bluedroid 1, lbh 2 */
-#else
-#define CONFIG_BLUEDROID        1 /* bleuz 0, bluedroid 1, lbh 2 */
-#endif
 /* #define HCI_VERSION_CODE KERNEL_VERSION(3, 14, 41) */
 #define HCI_VERSION_CODE LINUX_VERSION_CODE
 
 
-#define PRINT_CMD_EVENT         1
-#define PRINT_ACL_DATA          1
-#define PRINT_SCO_DATA          1
+#define PRINT_CMD_EVENT         0
+#define PRINT_ACL_DATA          0
+#define PRINT_SCO_DATA          0
 
-#define AICBT_DBG_FLAG          1
+#define AICBT_DBG_FLAG          0
 
 #if AICBT_DBG_FLAG
 #define AICBT_DBG(fmt, arg...) printk( "aic_btsdio: " fmt "\n" , ## arg)
@@ -39,9 +38,9 @@
 #define AICBT_DBG(fmt, arg...)
 #endif
 
-#define AICBT_INFO(fmt, arg...) printk("aic_btsdio: " fmt "\n" , ## arg)
-#define AICBT_WARN(fmt, arg...) printk("aic_btsdio: " fmt "\n" , ## arg)
-#define AICBT_ERR(fmt, arg...) printk("aic_btsdio: " fmt "\n" , ## arg)
+#define AICBT_INFO(fmt, arg...) no_printk("aic_btsdio: " fmt "\n" , ## arg)
+#define AICBT_WARN(fmt, arg...) pr_warn("aic_btsdio: " fmt "\n" , ## arg)
+#define AICBT_ERR(fmt, arg...) pr_err("aic_btsdio: " fmt "\n" , ## arg)
 
 #if LINUX_VERSION_CODE > KERNEL_VERSION(3, 4, 0)
 #define GET_DRV_DATA(x)        hci_get_drvdata(x)

@@ -127,7 +127,7 @@ static void btsdio_work(struct work_struct *work)
 
 /* Get HCI device by index.
  * Device is held on return. */
-struct hci_dev *hci_dev_get(int index)
+struct hci_dev *btsdio_hci_dev_get(int index)
 {
     if (index != 0)
         return NULL;
@@ -142,7 +142,7 @@ int bt_sdio_recv(u8 *data,u32 data_len)
 	struct hci_dev *hdev;
 	u32 len = data_len;
 	int ret=0;
-	hdev = hci_dev_get(0);
+	hdev = btsdio_hci_dev_get(0);
     if (!hdev) {
         AICWFDBG(LOGERROR,"%s: Failed to get hci dev[NULL]", __func__);
         return -ENODEV;
@@ -277,7 +277,7 @@ void btsdio_remove(void)
 {
 	struct btsdio_data *data;
 	struct hci_dev *hdev;
-    hdev = hci_dev_get(0);
+    hdev = btsdio_hci_dev_get(0);
     if (!hdev) {
         AICBT_ERR("%s: Failed to get hci dev[Null]", __func__);
         return;

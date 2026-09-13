@@ -36,6 +36,56 @@ upstream Linux history.
 | `arch/arm64/boot/dts/rockchip/rk3562-darkos.dtsi` | SDIO `sdr104→sdr50`, `sai1` disable |
 | `KernelSU-Next/` | Bundled KernelSU-Next kernel module (upstream: [KernelSU-Next/KernelSU-Next](https://github.com/KernelSU-Next/KernelSU-Next), tag `v3.2.0`) |
 
+## Modifications in this fork
+
+Everything below is confined to the board DTS and the AIC8800 driver; no other
+kernel source is touched. Verified on hardware (board revision B, `hw=14`).
+
+### Device tree — `arch/arm64/boot/dts/rockchip/rk3562-rg52mini.dts`
+
+| Change | Why |
+|--------|-----|
+| HUSB311 Type-C controller on `i2c2` (addr `0x4e`), `usb-role-switch` on `usbdrd_dwc3` instead of the phy `extcon` | The USB-C receptacle has **no ID pin** — the data role comes from the CC lines. Without the controller dwc3 waits on an extcon signal that never arrives and the port stays a peripheral forever: no root hub, no OTG at all. `CONFIG_TYPEC_HUSB311` was already enabled, only the node was missing. |
+| `spk-mute-delay-ms = <100>` on `rk817_codec` | The codec driver gates the external amplifier from `rk817_digital_mute_dac()`. Without a delay the GPIO switches right up against the DAC transition, and every playback start/stop is an audible click. `hp-mute-delay-ms` already existed for the headphone path; the speaker path had been overlooked. |
+| `spk-ctl-gpios` moved from `rk817_sound` to `rk817_codec` | Recovered from the shipped DTB. The amplifier has to be gated by the codec driver, which knows when the DAC mutes. |
+| `vfront-porch` 20 → 31 | Recovered from the shipped DTB. |
+
+The last two were already present in the binary DTB of the shipped image but
+missing from the published sources; they are restored here so a build from this
+tree matches the shipped device tree.
+
+### AIC8800 Wi-Fi/Bluetooth driver
+
+| Change | Why |
+|--------|-----|
+| `CONFIG_SDIO_BT=y` in both `aic8800_bsp` and `aic8800_fdrv` Makefiles | Bluetooth over SDIO is off by default, so the combo chip only ever did Wi-Fi. |
+| `CONFIG_BLUEDROID 0` in `aic_btsdio.h` — the BlueZ path, not the Android one | The Android branch declares its own copies of BlueZ types and does not compile against a kernel with `CONFIG_BT=y` (`redefinition of 'struct bt_skb_cb'`, `redeclaration of 'HCI_UP'`). The BlueZ path registers a normal `hci0`; the driver then loads the combo firmware `fmacfwbt_8800d80_h_u02.bin` by itself. |
+| `hci_dev_get` renamed to `btsdio_hci_dev_get` in `btsdio.c` | Clashes with the in-kernel symbol of the same name once `CONFIG_BT=y`. |
+| Debug output off in `aic_btsdio.h` (`AICBT_DBG_FLAG 0`, `AICBT_INFO` → `no_printk`) | Per-packet HCI tracing floods the log. |
+| `aicwf_dbg_level` / `aicwf_dbg_level_bsp` default to `LOGERROR` | The stock default is `LOGERROR\|LOGINFO\|LOGDEBUG\|LOGTRACE\|LOGFW`, which writes to the kernel ring buffer every three seconds and pushes everything else out of it. The module parameter still allows raising it at runtime. |
+
+Note that `CONFIG_SDIO_BT=y` never compiled in the published tree — an unused
+`bt_char_dev_registered` tripped `-Werror=unused-variable`. With the BlueZ path
+that file is not built, so no change was needed for it.
+
+### Firmware
+
+Bluetooth needs the combo firmware blob `fmacfwbt_8800d80_h_u02.bin` alongside
+the Wi-Fi ones in `CONFIG_AIC_FW_PATH`. The driver selects it on its own when
+`CONFIG_SDIO_BT=y`; it is not part of this repository.
+
+### Build
+
+Built and tested with **Arm GNU Toolchain 11.3** rather than the 16.1.0 used for
+the shipped image. Module symbol CRCs still match, since `genksyms` hashes
+preprocessed declarations and not compiler output.
+
+    make ARCH=arm64 CROSS_COMPILE=aarch64-none-linux-gnu- olddefconfig
+    make ARCH=arm64 CROSS_COMPILE=aarch64-none-linux-gnu- -j$(nproc) Image modules
+
+Clear `CONFIG_LOCALVERSION_AUTO` first if the tree is a git clone, otherwise
+`vermagic` gains a `-g<hash>` suffix and the prebuilt modules stop loading.
+
 ## KernelSU-Next
 
 KernelSU-Next v3.2.0 is bundled at `KernelSU-Next/`. It provides:

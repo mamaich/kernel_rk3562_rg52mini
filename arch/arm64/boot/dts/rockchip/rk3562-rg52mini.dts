@@ -7,6 +7,7 @@
 
 /dts-v1/;
 
+#include <dt-bindings/usb/pd.h>
 #include "rk3562.dtsi"
 #include "rk3562-linux.dtsi"
 #include "rk3562-rk817.dtsi"
@@ -210,9 +211,30 @@
 	];
 };
 
-/* RK817 codec — RG52 Mini uses higher headphone volume */
+/* RK817 codec — RG52 Mini uses higher headphone volume.
+ *
+ * spk-ctl-gpios lives here rather than on the sound card: the codec driver
+ * gates the external amplifier from rk817_digital_mute_dac(), so it can drop
+ * the GPIO before the DAC transition instead of after it.
+ *
+ * spk-mute-delay-ms is what makes that gating silent. Without it the
+ * amplifier switches right up against the DAC transition and every
+ * start/stop of playback is audible as a click. hp-mute-delay-ms already
+ * existed for the headphone path; the speaker path had been overlooked. */
 &rk817_codec {
 	hp-volume = <54>;
+	spk-ctl-gpios = <&gpio3 RK_PC3 GPIO_ACTIVE_HIGH>;
+	spk-mute-delay-ms = <100>;
+};
+
+/* The amplifier GPIO is claimed by the codec above, so drop it here. */
+&rk817_sound {
+	/delete-property/ spk-con-gpios;
+};
+
+/* Panel vertical front porch: 31 lines, not the 20 the shared dtsi sets. */
+&dsi_timing0 {
+	vfront-porch = <31>;
 };
 
 /* RK817 PMIC — battery and charger parameters */
@@ -258,12 +280,86 @@
 	};
 };
 
-/* ---- Per-device pinctrl additions ---------------------------------------- */
+
+/* ---- USB host: Type-C controller ---------------------------------------- */
+
+/*
+ * The USB-C receptacle has no ID pin: the data role is decided from the CC
+ * lines by a HUSB311 on i2c2. Without this node dwc3 waits on an extcon fed
+ * by the phy's ID detection, that signal never comes, and the port stays a
+ * peripheral forever - no root hub, no OTG at all.
+ *
+ * Values follow the vendor's own configuration for this board.
+ */
+&i2c2 {
+	status = "okay";
+
+	usbc0: husb311@4e {
+		compatible = "hynetek,husb311";
+		reg = <0x4e>;
+		interrupt-parent = <&gpio0>;
+		interrupts = <RK_PB7 IRQ_TYPE_LEVEL_LOW>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&usbc0_int>;
+		vbus-supply = <&otg_switch>;
+		status = "okay";
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+
+				usbc0_role_sw: endpoint@0 {
+					remote-endpoint = <&dwc3_role_switch>;
+				};
+			};
+		};
+
+		usb_con: connector {
+			compatible = "usb-c-connector";
+			label = "USB-C";
+			data-role = "dual";
+			power-role = "dual";
+			try-power-role = "sink";
+			op-sink-microwatt = <1000000>;
+			sink-pdos = <PDO_FIXED(5000, 3000, PDO_FIXED_USB_COMM)>;
+			source-pdos = <PDO_FIXED(5000, 2000, PDO_FIXED_DUAL_ROLE |
+						 PDO_FIXED_USB_COMM |
+						 PDO_FIXED_DATA_SWAP)>;
+		};
+	};
+};
+
+/* Take the role from the Type-C controller instead of the phy's extcon. */
+&usbdrd_dwc3 {
+	/delete-property/ extcon;
+	usb-role-switch;
+
+	port {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		dwc3_role_switch: endpoint@0 {
+			reg = <0>;
+			remote-endpoint = <&usbc0_role_sw>;
+		};
+	};
+};
+
+/* ---- Per-device pinctrl additions --------------------------------------- */
 
 &pinctrl {
 	vcc3v3_lcd_n {
 		lcd_pwren_h: lcd-pwren-h {
 			rockchip,pins = <0 RK_PB0 RK_FUNC_GPIO &pcfg_pull_up>;
+		};
+	};
+
+	usb-typec {
+		usbc0_int: usbc0-int {
+			rockchip,pins = <0 RK_PB7 RK_FUNC_GPIO &pcfg_pull_up>;
 		};
 	};
 };
