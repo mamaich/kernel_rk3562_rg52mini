@@ -47,6 +47,7 @@ kernel source is touched. Verified on hardware (board revision B, `hw=14`).
 |--------|-----|
 | HUSB311 Type-C controller on `i2c2` (addr `0x4e`), `usb-role-switch` on `usbdrd_dwc3` instead of the phy `extcon` | The USB-C receptacle has **no ID pin** — the data role comes from the CC lines. Without the controller dwc3 waits on an extcon signal that never arrives and the port stays a peripheral forever: no root hub, no OTG at all. `CONFIG_TYPEC_HUSB311` was already enabled, only the node was missing. |
 | `spk-mute-delay-ms = <100>` on `rk817_codec` | The codec driver gates the external amplifier from `rk817_digital_mute_dac()`. Without a delay the GPIO switches right up against the DAC transition, and every playback start/stop is an audible click. `hp-mute-delay-ms` already existed for the headphone path; the speaker path had been overlooked. |
+| `snps,loa-filter-en-quirk` on `usbdrd_dwc3` | Poor cables and ESD can fake a USB2 babble condition in the idle window between high-speed EOF2 and the next microframe SOF; xHCI then disables the root hub port outright and the device drops off with `usb usb1-port1: disabled by hub (EMI?), re-enabling...`. `GUCTL1.LOA_FILTER_EN` makes the controller require three consecutive babble detections before killing the port. Pairs with the dwc3 driver change below. |
 | `spk-ctl-gpios` moved from `rk817_sound` to `rk817_codec` | Recovered from the shipped DTB. The amplifier has to be gated by the codec driver, which knows when the DAC mutes. |
 | `vfront-porch` 20 → 31 | Recovered from the shipped DTB. |
 
@@ -67,6 +68,17 @@ tree matches the shipped device tree.
 Note that `CONFIG_SDIO_BT=y` never compiled in the published tree — an unused
 `bt_char_dev_registered` tripped `-Werror=unused-variable`. With the BlueZ path
 that file is not built, so no change was needed for it.
+
+### USB dwc3 driver
+
+| Change | Why |
+|--------|-----|
+| LOA babble filter quirk (`drivers/usb/dwc3/core.{c,h}`) | Backport of `usb: dwc3: core: Add LOA babble filter quirk on Rockchip` by William Wu (rockchip-linux/kernel `develop-5.10`, commit `40bd356d9e23`), which landed after the snapshot this tree is based on. Adds `snps,loa-filter-en-quirk` parsing and sets `GUCTL1.LOA_FILTER_EN`. Without it the device tree property above does nothing. |
+
+The quirk was picked up while diffing this tree against the current Rockchip
+`develop-5.10` branch. It is the only change in that branch, across display,
+Mali, audio, mmc and Wi-Fi, that applies to this board — everything else
+targets other SoCs or hardware this device does not have.
 
 ### Kernel configuration
 

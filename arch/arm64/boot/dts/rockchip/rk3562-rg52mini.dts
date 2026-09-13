@@ -337,6 +337,19 @@
 	/delete-property/ extcon;
 	usb-role-switch;
 
+	/* Poor cables and ESD can fake a USB2 babble condition during the idle
+	 * window between high-speed EOF2 and the next microframe SOF. xHCI then
+	 * disables the root hub port outright and the device drops off:
+	 *
+	 *     usb usb1-port1: disabled by hub (EMI?), re-enabling...
+	 *     usb 1-1: USB disconnect, device number 2
+	 *
+	 * GUCTL1.LOA_FILTER_EN makes the controller require three consecutive
+	 * babble detections before killing the port, which filters the
+	 * transient false ones out. Needs the matching driver support in
+	 * drivers/usb/dwc3/core.c. */
+	snps,loa-filter-en-quirk;
+
 	port {
 		#address-cells = <1>;
 		#size-cells = <0>;
