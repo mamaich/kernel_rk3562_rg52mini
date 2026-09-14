@@ -1203,6 +1203,8 @@ static int rk817_hw_params(struct snd_pcm_substream *substream,
 		snd_soc_component_write(component, RK817_CODEC_APLL_CFG3, apll_cfg3_val);
 		snd_soc_component_update_bits(component, RK817_CODEC_DDAC_SR_LMT0,
 					      DACSRT_MASK, dtop_digen_sr_lmt0);
+		snd_soc_component_update_bits(component, RK817_CODEC_DADC_SR_ACL0,
+					      ADCSRT_MASK, dtop_digen_sr_lmt0);
 		if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
 			rk817_restart_dac_digital_clk_and_apll(component);
 		else

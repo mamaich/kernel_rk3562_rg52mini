@@ -81,6 +81,22 @@ The quirk was picked up while diffing this tree against the current Rockchip
 Mali, audio, mmc and Wi-Fi, that applies to this board — everything else
 targets other SoCs or hardware this device does not have.
 
+### RK817 codec
+
+| Change | Why |
+|--------|-----|
+| Program `RK817_CODEC_DADC_SR_ACL0` from `hw_params()` alongside the DAC one, and add the missing `ADCSRT_MASK` to the header | The ADC sample rate register was never written: it is left at the `0x02` that `capture_power_up_list` sets, which is the code for 32/44.1/48 kHz. Recording at 16 kHz -- what Android voice capture uses -- therefore ran the ADC configured for 48 kHz. Confirmed by reading the register on hardware: it stays `0x02` at both rates. Equivalent to `ASoC: rk817: Fix sample rate configuration for PDM and I2S modes` in rockchip-linux/kernel. |
+
+This driver is a fork: the port author added headset detection
+(`CONFIG_RK817_HEADSET`) and stopped merging Rockchip fixes into it, so the
+file is 114 lines longer than the branch and had drifted behind by this one
+fix. The rate value itself was already computed correctly here as
+`dtop_digen_sr_lmt0`; only the second register write was missing.
+
+Note that the built-in microphone on this board does not work regardless --
+that is a hardware fault, reproducible under EmuELEC with a known-good device
+tree. This fix matters for the headset microphone on the jack.
+
 ### Kernel configuration
 
 | Change | Why |
