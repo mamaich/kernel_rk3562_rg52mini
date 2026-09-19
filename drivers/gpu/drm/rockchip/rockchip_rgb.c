@@ -144,6 +144,11 @@ struct rockchip_rgb {
 	bool phy_enabled;
 	const struct rockchip_rgb_funcs *funcs;
 	struct rockchip_drm_sub_dev sub_dev;
+	/*
+	 * Мост так и не появился, выход RGB собирать не из чего. Всё
+	 * остальное в этой структуре при этом не инициализировано.
+	 */
+	bool skipped;
 };
 
 static inline struct rockchip_rgb *connector_to_rgb(struct drm_connector *c)
@@ -890,6 +895,27 @@ static int rockchip_rgb_bind(struct device *dev, struct device *master,
 		ret = drm_of_find_panel_or_bridge(dev->of_node, 1, -1,
 						  &rgb->panel, &rgb->bridge);
 		if (ret) {
+			/*
+			 * Если моста нет (не распаян, неисправен, молчит на i2c),
+			 * поиск возвращает -EPROBE_DEFER. Раньше этот отказ уходил
+			 * наверх и навсегда останавливал сборку DRM: подсистема
+			 * поднимается целиком или никак, поэтому вместе с ненужным
+			 * выходом RGB пропадала и исправная панель DSI — экран
+			 * оставался чёрным с самого старта ядра.
+			 *
+			 * Пока идут initcall'ы, ждём мост как обычно. Когда ядро
+			 * закончило перебор, а он так и не появился, помощник
+			 * отвечает уже не «повторите позже» — тогда собираемся без
+			 * выхода RGB. Теряется только HDMI через этот мост.
+			 */
+			if (ret == -EPROBE_DEFER &&
+			    driver_deferred_probe_check_state(dev) != -EPROBE_DEFER) {
+				DRM_DEV_ERROR(dev,
+					      "no panel or bridge, RGB output disabled\n");
+				rgb->skipped = true;
+				return 0;
+			}
+
 			DRM_DEV_ERROR(dev, "failed to find panel or bridge: %d\n", ret);
 			return ret;
 		}
@@ -967,6 +993,10 @@ static void rockchip_rgb_unbind(struct device *dev, struct device *master,
 				void *data)
 {
 	struct rockchip_rgb *rgb = dev_get_drvdata(dev);
+
+	/* bind вышел раньше: ни кодировщика, ни разъёма не создавалось */
+	if (rgb->skipped)
+		return;
 
 	if (rgb->sub_dev.connector)
 		rockchip_drm_unregister_sub_dev(&rgb->sub_dev);
