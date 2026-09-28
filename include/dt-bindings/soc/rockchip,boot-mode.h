@@ -24,5 +24,8 @@
 #define BOOT_QUIESCENT		(REBOOT_FLAG + 14)
 /* reboot by panic and capture ramdump in uboot through usb */
 #define BOOT_WINUSB		(REBOOT_FLAG + 15)
+/* RG52 Mini: система с внутренней eMMC, загрузчик с карты. Значение свободно,
+ * с режимами Rockchip не конфликтует. */
+#define BOOT_EMMC		(REBOOT_FLAG + 21)
 
 #endif

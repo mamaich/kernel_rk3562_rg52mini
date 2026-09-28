@@ -1294,6 +1294,7 @@
 			offset = <0x220>;
 			mode-bootloader = <BOOT_BL_DOWNLOAD>;
 			mode-charge = <BOOT_CHARGING>;
+			mode-emmc = <BOOT_EMMC>;
 			mode-fastboot = <BOOT_FASTBOOT>;
 			mode-loader = <BOOT_BL_DOWNLOAD>;
 			mode-normal = <BOOT_NORMAL>;
