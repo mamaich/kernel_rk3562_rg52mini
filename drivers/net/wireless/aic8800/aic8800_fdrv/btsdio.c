@@ -165,7 +165,13 @@ int bt_sdio_recv(u8 *data,u32 data_len)
 	if(ret < 0){
 		AICWFDBG(LOGERROR, "hci_recv_frame fail %d\n",ret);
 		hdev->stat.err_rx++;
-		kfree_skb(skb);
+		/* No kfree_skb() here: hci_recv_frame() owns the skb and frees
+		 * it on every error path of its own - -ENXIO when the hci device
+		 * is down, -EINVAL on an unknown packet type. Freeing it a second
+		 * time corrupts the slab, and the crash then lands far from here:
+		 * inside kmem_cache_alloc() or on a netlink queue, with this
+		 * driver long out of the picture.
+		 */
 	}
 	return 0;
 }
