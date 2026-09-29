@@ -151,6 +151,13 @@ int bt_sdio_recv(u8 *data,u32 data_len)
 	skb = alloc_skb(len-1,GFP_ATOMIC);
 	if(!skb){
 		AICWFDBG(LOGERROR, "alloc skb fail %s \n",__func__);
+		/* The vendor code went on to memcpy() into skb_put(NULL, ...).
+		 * GFP_ATOMIC does fail on this 2 GB device when a heavy game
+		 * leaves memory short, and a Bluetooth gamepad keeps frames
+		 * coming the whole time, so drop the frame instead of oopsing.
+		 */
+		hdev->stat.err_rx++;
+		return -ENOMEM;
 	}
 	memcpy(skb_put(skb,len-1) ,(data+1), len-1);
 	hdev->stat.byte_rx += len;
