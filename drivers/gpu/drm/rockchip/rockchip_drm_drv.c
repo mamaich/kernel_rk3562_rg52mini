@@ -1941,6 +1941,23 @@ static int rockchip_drm_bind(struct device *dev)
 	if (ret)
 		goto err_iommu_cleanup;
 
+#ifndef MODULE
+	/*
+	 * Логотип u-boot ядру не передан: на загрузочном разделе нет
+	 * logo_kernel.bmp, и класть его нельзя - у нас эта передача гасит экран
+	 * после загрузки Android. Тогда rockchip_drm_show_logo() уходит по ветке
+	 * ошибки, а буфер освобождается только в удачной ветке, и 3,5 МиБ резерва
+	 * drm-logo остаются занятыми до выключения. Отдаём их здесь, но только
+	 * если развёртка уже переведена на кадр fbdev (его держит плоскость, и
+	 * счётчик ссылок больше единицы). Без fbcon (например, fbcon=map:1) VOP
+	 * может ещё читать буфер u-boot - тогда он остаётся занятым, как раньше.
+	 */
+	if (private->logo && !private->loader_protect && private->fbdev_helper &&
+	    private->fbdev_helper->fb &&
+	    drm_framebuffer_read_refcount(private->fbdev_helper->fb) > 1)
+		rockchip_free_loader_memory(drm_dev);
+#endif
+
 	drm_dev->mode_config.allow_fb_modifiers = true;
 
 	ret = drm_dev_register(drm_dev, 0);
