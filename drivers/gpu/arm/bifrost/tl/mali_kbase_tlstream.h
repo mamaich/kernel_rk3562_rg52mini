@@ -30,7 +30,13 @@
 #define PACKET_SIZE 4096 /* bytes */
 
 /* The number of packets used by one timeline stream. */
-#define PACKET_COUNT 128
+/*
+ * 16 пакетов вместо 128: кольцевые буферы timeline нужны только профилировщику
+ * ARM Streamline и держат vmalloc всё время работы (3 потока x 128 x 4 КиБ =
+ * 1,5 МиБ). Счётчики в tlstream беззнаковые и идут по модулю, степень двойки
+ * это переживает.
+ */
+#define PACKET_COUNT 16
 
 /* The maximum expected length of string in tracepoint descriptor. */
 #define STRLEN_MAX 64 /* bytes */

@@ -4654,7 +4654,8 @@ out:
 	return count;
 }
 
-static long validate_slab_cache(struct kmem_cache *s)
+/* без SLUB_SYSFS её зовёт только тест SLUB_RESILIENCY_TEST */
+static long __maybe_unused validate_slab_cache(struct kmem_cache *s)
 {
 	int node;
 	unsigned long count = 0;
