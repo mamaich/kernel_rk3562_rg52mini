@@ -14,7 +14,15 @@
 #include "rockchip_drm_fb.h"
 #include "rockchip_drm_fbdev.h"
 
-#define PREFERRED_BPP		32
+/*
+ * 16 бит на пиксель вместо 32. fbdev здесь нужен только fbcon на время загрузки
+ * (пингвин и курсор между логотипом u-boot и анимацией Android), а буфер живёт
+ * всё время работы - 1,75 МиБ вместо 3,5. Снять fbdev после загрузки совсем
+ * нельзя: композитор Rockchip при гашении и включении экрана шлёт через fb0
+ * FBIOBLANK, и только по этому событию выключается мост HDMI rk628 и
+ * снижается частота памяти при погашенном экране.
+ */
+#define PREFERRED_BPP		16
 
 static int rockchip_fbdev_mmap(struct fb_info *info,
 			       struct vm_area_struct *vma)
