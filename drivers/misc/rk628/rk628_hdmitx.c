@@ -81,6 +81,13 @@ struct rk628_hdmi {
 
 	struct platform_device *audio_pdev;
 	bool audio_enable;
+	/*
+	 * RG52: last audio parameters from hw_params. Enabling the display
+	 * resets the HDMI TX block (rk628_hdmitx_enable), which wipes the
+	 * audio setup; rk628_hdmi_setup() re-applies it from here.
+	 */
+	struct audio_info audio;
+	bool audio_valid;
 
 	struct hdmi_data_info	hdmi_data;
 	struct drm_display_mode previous_mode;
@@ -518,6 +525,9 @@ static int rk628_hdmi_config_video_timing(struct rk628_hdmi *hdmi,
 	return 0;
 }
 
+static int rk628_hdmi_audio_config_set(struct rk628_hdmi *hdmi,
+				       struct audio_info *audio);
+
 static int rk628_hdmi_setup(struct rk628_hdmi *hdmi,
 			    struct drm_display_mode *mode)
 {
@@ -562,8 +572,19 @@ static int rk628_hdmi_setup(struct rk628_hdmi *hdmi,
 
 	/* Unmute video and audio output */
 	hdmi_modb(hdmi, HDMI_AV_MUTE, VIDEO_BLACK_MASK, VIDEO_MUTE(0));
-	if (hdmi->audio_enable)
-		hdmi_modb(hdmi, HDMI_AV_MUTE, AUDIO_MUTE_MASK, AUDIO_MUTE(0));
+	if (hdmi->audio_enable) {
+		/*
+		 * RG52: the stream may have been started before the display
+		 * was enabled (Android opens the HDMI PCM as soon as the cable
+		 * is reported). The TX reset cleared the audio registers and
+		 * left AUDIO_PD set, so restore the setup and power the audio
+		 * path up again, not just unmute it.
+		 */
+		if (hdmi->audio_valid && hdmi->hdmi_data.sink_has_audio)
+			rk628_hdmi_audio_config_set(hdmi, &hdmi->audio);
+		hdmi_modb(hdmi, HDMI_AV_MUTE, AUDIO_MUTE_MASK | AUDIO_PD_MASK,
+			  AUDIO_MUTE(0) | AUDIO_PD(0));
+	}
 
 	return 0;
 }
@@ -915,6 +936,9 @@ static int rk628_hdmi_audio_hw_params(struct device *dev, void *d,
 		dev_err(dev, "%s: Invalid format %d\n", __func__, daifmt->fmt);
 		return -EINVAL;
 	}
+
+	hdmi->audio = audio;
+	hdmi->audio_valid = true;
 
 	return rk628_hdmi_audio_config_set(hdmi, &audio);
 }
