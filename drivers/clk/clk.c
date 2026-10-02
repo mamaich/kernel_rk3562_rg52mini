@@ -3114,6 +3114,16 @@ static int inited = 0;
 static DEFINE_MUTEX(clk_debug_lock);
 static HLIST_HEAD(clk_debug_list);
 
+/*
+ * RG52 Mini: the per-clock directories (~380 clocks with 11-14 files each,
+ * ~5400 debugfs entries) stay pinned in memory for as long as the clocks
+ * exist - about 4.5 MB of dentries and inodes that nothing on the device
+ * reads. They are created only when booting with clk_debugfs_full=1;
+ * clk_summary, clk_dump and the orphan lists are always there.
+ */
+static bool clk_debugfs_full;
+core_param(clk_debugfs_full, clk_debugfs_full, bool, 0444);
+
 static struct hlist_head *orphan_list[] = {
 	&clk_orphan_list,
 	NULL,
@@ -3492,7 +3502,7 @@ static void clk_debug_register(struct clk_core *core)
 {
 	mutex_lock(&clk_debug_lock);
 	hlist_add_head(&core->debug_node, &clk_debug_list);
-	if (inited)
+	if (inited && clk_debugfs_full)
 		clk_debug_create_one(core, rootdir);
 	mutex_unlock(&clk_debug_lock);
 }
@@ -3557,8 +3567,9 @@ static int __init clk_debug_init(void)
 			    &clk_dump_fops);
 
 	mutex_lock(&clk_debug_lock);
-	hlist_for_each_entry(core, &clk_debug_list, debug_node)
-		clk_debug_create_one(core, rootdir);
+	if (clk_debugfs_full)
+		hlist_for_each_entry(core, &clk_debug_list, debug_node)
+			clk_debug_create_one(core, rootdir);
 
 	inited = 1;
 	mutex_unlock(&clk_debug_lock);

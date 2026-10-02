@@ -31,7 +31,16 @@ static void input_dev_poller_queue_work(struct input_dev_poller *poller)
 	if (delay >= HZ)
 		delay = round_jiffies_relative(delay);
 
-	queue_delayed_work(system_freezable_wq, &poller->work, delay);
+	/*
+	 * RG52 Mini: keep polling on the boot CPU. The polled devices here (the
+	 * gamepad and adc-keys) read SARADC channels and wait for the
+	 * end-of-conversion interrupt, which the GIC delivers to CPU0. Left
+	 * unbound, the work follows timer migration to whatever CPU, and every
+	 * conversion then costs a cross-CPU wakeup: measured 39 ms of CPU per
+	 * second for the gamepad poll on CPU3 against 17 ms/s on CPU0.
+	 */
+	queue_delayed_work_on(cpumask_first(cpu_online_mask), system_freezable_wq,
+			      &poller->work, delay);
 }
 
 static void input_dev_poller_work(struct work_struct *work)

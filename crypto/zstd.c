@@ -26,7 +26,19 @@ struct zstd_ctx {
 
 static ZSTD_parameters zstd_params(void)
 {
-	return ZSTD_getParams(ZSTD_DEF_LEVEL, 0, 0);
+	ZSTD_parameters params = ZSTD_getParams(ZSTD_DEF_LEVEL, 0, 0);
+
+	/*
+	 * RG52 Mini: the users of this transform (zram, zswap) compress one
+	 * page at a time, so a window larger than a page buys nothing - the
+	 * whole input already fits - but the window size still sizes the
+	 * per-CPU token buffers: 480 KiB of the 1.26 MiB workspace at the
+	 * default windowLog 20. Capped at a page, a page compresses to the
+	 * same blocks; only the window size byte in the frame header differs.
+	 */
+	params.cParams.windowLog = min_t(unsigned int, params.cParams.windowLog,
+					 PAGE_SHIFT);
+	return params;
 }
 
 static int zstd_comp_init(struct zstd_ctx *ctx)

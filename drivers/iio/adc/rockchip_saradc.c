@@ -453,7 +453,14 @@ MODULE_DEVICE_TABLE(of, rockchip_saradc_match);
 static void rockchip_saradc_reset_controller(struct reset_control *reset)
 {
 	reset_control_assert(reset);
-	usleep_range(10, 20);
+	/*
+	 * RG52 Mini: busy-wait instead of usleep_range(10, 20). The v2 start
+	 * path resets the controller before every conversion, and the gamepad
+	 * driver reads 12 channels per poll, so the sleep meant 12 extra
+	 * sleep/wakeup round trips per poll (~600 a second at 50 Hz) to wait
+	 * 10 us - each wakeup costing more than the wait itself.
+	 */
+	udelay(10);
 	reset_control_deassert(reset);
 }
 
