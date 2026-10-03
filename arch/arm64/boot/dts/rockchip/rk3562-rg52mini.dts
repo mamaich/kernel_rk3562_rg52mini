@@ -393,3 +393,50 @@
 	rockchip,high-temp = <95000>;
 	rockchip,high-temp-max-volt = <1100000>;
 };
+
+/* ---- Overclock steps (optional). Need the BL31 table patch from the u-boot tree
+ * (tools/rg52mini/bl31_oc.py, doc/rg52mini/05-разгон.md): BL31 only knows rates
+ * that are in its own table, and the kernel clamps to its SCMI list.
+ * Voltages are for speed bin L3; the label is only a key, the real clock follows
+ * ring length and voltage (2112 -> ~2090 MHz at 1.20 V, 2208 -> ~2135 MHz at
+ * 1.15 V, GPU 1000 -> ~962 MHz).  2208 is turbo-mode: off until
+ * /sys/devices/system/cpu/cpufreq/boost = 1.  Datasheet: VDD_CPU 1.15 V
+ * recommended max, 1.2 V absolute max. */
+&cpu0_opp_table {
+	opp-2112000000 {
+		opp-supported-hw = <0xf9 0xffff>;
+		opp-hz = /bits/ 64 <2112000000>;
+		opp-microvolt = <1200000 1200000 1200000>;
+		opp-microvolt-L0 = <1200000 1200000 1200000>;
+		opp-microvolt-L1 = <1200000 1200000 1200000>;
+		opp-microvolt-L2 = <1200000 1200000 1200000>;
+		opp-microvolt-L3 = <1200000 1200000 1200000>;
+		opp-microvolt-L4 = <1200000 1200000 1200000>;
+		clock-latency-ns = <40000>;
+	};
+	opp-2208000000 {
+		opp-supported-hw = <0xf9 0xffff>;
+		opp-hz = /bits/ 64 <2208000000>;
+		opp-microvolt = <1150000 1150000 1150000>;
+		opp-microvolt-L0 = <1150000 1150000 1150000>;
+		opp-microvolt-L1 = <1150000 1150000 1150000>;
+		opp-microvolt-L2 = <1150000 1150000 1150000>;
+		opp-microvolt-L3 = <1150000 1150000 1150000>;
+		opp-microvolt-L4 = <1150000 1150000 1150000>;
+		clock-latency-ns = <40000>;
+		turbo-mode;
+	};
+};
+
+&gpu_opp_table {
+	opp-1000000000 {
+		opp-supported-hw = <0xf9 0xffff>;
+		opp-hz = /bits/ 64 <1000000000>;
+		opp-microvolt = <975000 975000 1000000>;
+		opp-microvolt-L0 = <975000 975000 1000000>;
+		opp-microvolt-L1 = <975000 975000 1000000>;
+		opp-microvolt-L2 = <975000 975000 1000000>;
+		opp-microvolt-L3 = <975000 975000 1000000>;
+		opp-microvolt-L4 = <975000 975000 1000000>;
+	};
+};
