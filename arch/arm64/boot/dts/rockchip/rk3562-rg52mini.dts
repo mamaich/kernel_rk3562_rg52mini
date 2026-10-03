@@ -394,6 +394,17 @@
 	rockchip,high-temp-max-volt = <1100000>;
 };
 
+/* The 2016 MHz step on speed bin L3: the stock 1.100 V gives a real ~1950 MHz
+ * (3 % below the label, ~1910 when hot), 1.125 V gives ~2007 MHz (PVTPLL
+ * counter, bin L3, pvtm 1437). Only L3 changes: bins L0/L1 already run this
+ * step at 1.15 V, and there are no measurements for L2/L4. The 1.15 V ceiling
+ * stays. The Android image applies the same value to its DTB in mk-sdimg.sh. */
+&cpu0_opp_table {
+	opp-2016000000 {
+		opp-microvolt-L3 = <1125000 1125000 1150000>;
+	};
+};
+
 /* ---- Overclock steps (optional). Need the BL31 table patch from the u-boot tree
  * (tools/rg52mini/bl31_oc.py, doc/rg52mini/05-разгон.md): BL31 only knows rates
  * that are in its own table, and the kernel clamps to its SCMI list.
