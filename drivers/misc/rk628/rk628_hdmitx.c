@@ -926,9 +926,6 @@ static int rk628_hdmi_audio_hw_params(struct device *dev, void *d,
 		return -ENODEV;
 	}
 
-	if (!hdmi->bridge.encoder->crtc)
-		return -ENODEV;
-
 	switch (daifmt->fmt) {
 	case HDMI_I2S:
 		break;
@@ -939,6 +936,16 @@ static int rk628_hdmi_audio_hw_params(struct device *dev, void *d,
 
 	hdmi->audio = audio;
 	hdmi->audio_valid = true;
+
+	/*
+	 * RG52: HDMI is not on the video port right now. The SoC has a single
+	 * VOP port, and on wake HWC gives it to the panel first; HDMI gets it
+	 * back a few seconds later. Failing here broke the stream Android had
+	 * just opened for the still-connected HDMI, and the TV stayed silent.
+	 * Keep the parameters: rk628_hdmi_setup() applies them on enable.
+	 */
+	if (!hdmi->bridge.encoder->crtc)
+		return 0;
 
 	return rk628_hdmi_audio_config_set(hdmi, &audio);
 }
@@ -981,11 +988,23 @@ static int rk628_hdmi_audio_get_eld(struct device *dev, void *d,
 	int ret = -ENODEV;
 
 	mutex_lock(&config->mutex);
-	list_for_each_entry(connector, &config->connector_list, head) {
-		if (hdmi->bridge.encoder == connector->encoder) {
-			memcpy(buf, connector->eld,
-			       min(sizeof(connector->eld), len));
-			ret = 0;
+	/*
+	 * RG52: our own connector, whether it is on the video port or not.
+	 * connector->encoder is set only while HDMI is bound to the VOP, so
+	 * the lookup below failed in the seconds after wake, when HWC has the
+	 * port with the panel, and opening the HDMI PCM returned -ENODEV.
+	 */
+	if (hdmi->connector.dev) {
+		memcpy(buf, hdmi->connector.eld,
+		       min(sizeof(hdmi->connector.eld), len));
+		ret = 0;
+	} else {
+		list_for_each_entry(connector, &config->connector_list, head) {
+			if (hdmi->bridge.encoder == connector->encoder) {
+				memcpy(buf, connector->eld,
+				       min(sizeof(connector->eld), len));
+				ret = 0;
+			}
 		}
 	}
 	mutex_unlock(&config->mutex);
