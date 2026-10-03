@@ -12,6 +12,7 @@
 #include <linux/component.h>
 #include <linux/debugfs.h>
 #include <linux/iopoll.h>
+#include <linux/ktime.h>
 #include <linux/module.h>
 #include <linux/of_device.h>
 #include <linux/pm_runtime.h>
@@ -244,6 +245,7 @@ struct debugfs_entries {
 #endif /* CONFIG_DEBUG_FS */
 
 struct dw_mipi_dsi {
+	ktime_t rg52_off_ts;	/* RG52: boottime of the last link power-off, 0 = never */
 	struct drm_bridge bridge;
 	struct drm_connector connector;
 	struct drm_encoder *encoder;
@@ -878,6 +880,30 @@ static void dw_mipi_dsi_clear_err(struct dw_mipi_dsi *dsi)
 	dsi_write(dsi, DSI_INT_MSK1, 0);
 }
 
+/*
+ * RG52: minimum time between powering the link off and on again, in ms;
+ * 0 = off. A re-enable sooner than this waits out the rest.
+ *
+ * A quick off/on of the panel - about 40 ms, e.g. an fbdev blank and unblank,
+ * or a modeset right after a disable - leaves it black with the backlight on
+ * until the next sleep/wake. The same black screen hits RG52 boards of
+ * revision A right after the U-Boot logo. Measured on revision B: 28-41 ms
+ * off -> black, 147 ms and more -> picture. Neither the CRU reset of the
+ * D-PHY nor the DSI host APB reset helps, while this wait does, even with
+ * the VOP still cycled in 41 ms: what needs the time is the analog part of
+ * the D-PHY (LDO, PLL, bandgap) or the panel. The wait sits before the PHY
+ * power-on and the panel prepare, so both stay off long enough.
+ *
+ * Threshold measured on revision B: 120 ms off -> black, 150 ms -> picture.
+ * The dArkOS panel-kick, which keeps the panel off for about 0.3 s, cures
+ * revision A, so its threshold is below that; 500 ms leaves margin for both.
+ * Boottime, so that time spent in system suspend counts as off time and a
+ * resume never waits.
+ */
+static unsigned int rg52_min_off_ms = 500;
+module_param(rg52_min_off_ms, uint, 0644);
+MODULE_PARM_DESC(rg52_min_off_ms, "RG52: minimum DSI off time before re-enable, ms");
+
 static void dw_mipi_dsi_post_disable(struct dw_mipi_dsi *dsi, struct drm_crtc_state *new_crtc_state)
 {
 	const struct dw_mipi_dsi_phy_ops *phy_ops = dsi->plat_data->phy_ops;
@@ -891,6 +917,7 @@ static void dw_mipi_dsi_post_disable(struct dw_mipi_dsi *dsi, struct drm_crtc_st
 	dsi_write(dsi, DSI_PWR_UP, RESET);
 	dsi_write(dsi, DSI_PHY_RSTZ, PHY_RSTZ);
 	pm_runtime_put(dsi->dev);
+	dsi->rg52_off_ts = ktime_get_boottime();
 
 psr_out:
 	if (dsi->slave)
@@ -1003,10 +1030,14 @@ static void dw_mipi_dsi_pre_enable(struct dw_mipi_dsi *dsi, struct drm_crtc_stat
 	if (old_crtc_state && old_crtc_state->self_refresh_active)
 		goto phy_get_lane_rate;
 
-	if (dsi->apb_rst) {
-		reset_control_assert(dsi->apb_rst);
-		usleep_range(10, 20);
-		reset_control_deassert(dsi->apb_rst);
+	if (rg52_min_off_ms && dsi->rg52_off_ts) {
+		s64 ms = ktime_ms_delta(ktime_get_boottime(), dsi->rg52_off_ts);
+
+		if (ms >= 0 && ms < rg52_min_off_ms) {
+			dev_info(dsi->dev, "link off %lld ms, waiting %lld ms more\n",
+				 ms, (s64)rg52_min_off_ms - ms);
+			msleep(rg52_min_off_ms - ms);
+		}
 	}
 
 phy_get_lane_rate:
@@ -1019,6 +1050,16 @@ phy_get_lane_rate:
 		goto phy_power_on;
 
 	pm_runtime_get_sync(dsi->dev);
+	/*
+	 * RG52: reset the host with its APB clock running. It used to be done
+	 * before pm_runtime_get_sync(), when PCLK_DSITX could still be gated by
+	 * the runtime suspend of the previous power-off.
+	 */
+	if (dsi->apb_rst) {
+		reset_control_assert(dsi->apb_rst);
+		usleep_range(10, 20);
+		reset_control_deassert(dsi->apb_rst);
+	}
 	dw_mipi_dsi_init(dsi);
 	dw_mipi_dsi_dpi_config(dsi, adjusted_mode);
 	dw_mipi_dsi_packet_handler_config(dsi);

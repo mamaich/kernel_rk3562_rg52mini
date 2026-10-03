@@ -715,6 +715,23 @@ static void inno_dsidphy_phy_ttl_mode_enable(struct inno_dsidphy *inno)
 	host_update_bits(inno, DSI_PHY_RSTZ, PHY_ENABLECLK, PHY_ENABLECLK);
 }
 
+/*
+ * RG52: reset the PHY through the CRU on every power-on.
+ *
+ * Nothing else ever resets this PHY: it is in no power domain, power_off only
+ * clears the lane, LDO, PLL and bandgap bits, and power_on sets them back by
+ * read-modify-write, so the first power-on after U-Boot starts from whatever
+ * U-Boot left. Off by default: tested on revision B, it does not cure the
+ * black panel after a quick off/on (rg52_min_off_ms in dw-mipi-dsi.c does),
+ * and it would change the U-Boot handoff that works today, putting registers
+ * the kernel never writes back to their defaults. Kept as a switch for
+ * diagnosis. u-boot programs analog register 0x0a (post divider), which the
+ * kernel never writes, so it is carried over the reset.
+ */
+static bool rg52_reset;
+module_param(rg52_reset, bool, 0644);
+MODULE_PARM_DESC(rg52_reset, "RG52: CRU reset of the PHY on every power-on");
+
 static int inno_dsidphy_power_on(struct phy *phy)
 {
 	struct inno_dsidphy *inno = phy_get_drvdata(phy);
@@ -723,6 +740,17 @@ static int inno_dsidphy_power_on(struct phy *phy)
 	clk_prepare_enable(inno->pclk_phy);
 	clk_prepare_enable(inno->ref_clk);
 	pm_runtime_get_sync(inno->dev);
+
+	if (rg52_reset && !IS_ERR_OR_NULL(inno->rst)) {
+		u32 off = PHY_REG(REGISTER_PART_ANALOG, 0x0a) << 2;
+		u32 postdiv = readl(inno->phy_base + off);
+
+		reset_control_assert(inno->rst);
+		udelay(10);
+		reset_control_deassert(inno->rst);
+		udelay(10);
+		writel(postdiv, inno->phy_base + off);
+	}
 
 	/* Bandgap power on */
 	phy_update_bits(inno, REGISTER_PART_ANALOG, 0x00,
