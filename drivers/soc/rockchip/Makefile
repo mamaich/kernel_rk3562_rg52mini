@@ -2,6 +2,8 @@
 #
 # Rockchip Soc drivers
 #
+# RG52 Mini: real CPU/GPU clock from the PVTPLL counters, /sys/kernel/rg52
+obj-$(CONFIG_ARCH_ROCKCHIP) += rg52_pvtpll.o
 obj-$(CONFIG_ROCKCHIP_AMP) += rockchip_amp.o
 obj-$(CONFIG_ROCKCHIP_CPUINFO) += rockchip-cpuinfo.o
 obj-$(CONFIG_ROCKCHIP_CSU) += rockchip_csu.o
