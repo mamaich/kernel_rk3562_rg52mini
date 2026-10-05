@@ -37,7 +37,17 @@
 #include "mali_kbase_config_platform.h"
 #include "mali_kbase_rk.h"
 
-#define POWER_DOWN_FREQ	200000000
+/*
+ * RG52 Mini: the rate the GPU clock is parked at before the GPU is powered off.
+ * The stock 200 MHz is no longer in the BL31 SCMI rate list once the overclock
+ * table patch (u-boot tools/rg52mini/bl31_oc.py --drop-lowest gpu) makes room
+ * for 1000 MHz, so clk_set_rate() failed on every power-off ("failed to set
+ * power down rate") and the GPU went down at whatever it ran at: 900-1000 MHz
+ * under the performance governor of the max and overclock modes. Boards of
+ * revision A rebooted on the power key in exactly those modes. 300 MHz is the
+ * lowest rate left in the list, still from the PLL divider.
+ */
+#define POWER_DOWN_FREQ	300000000
 
 /**
  * @file mali_kbase_config_rk.c
