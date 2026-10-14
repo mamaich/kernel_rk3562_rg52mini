@@ -10,7 +10,8 @@
  * Features:
  * - IRQ-driven GPIO buttons with configurable debounce
  * - Dynamic GPIO button count (read from DT key-gpios-map)
- * - Force feedback (rumble) via GPIO-connected motors
+ * - Force feedback (rumble) via GPIO-connected motors, with strength done as
+ *   software PWM (the motors themselves are on/off only)
  * - Left/right stick X/Y axis swap (DT properties)
  * - Left stick polarity inversion (DT property "left-stick-invert")
  * - Axis-to-dpad mode via sysfs
@@ -35,6 +36,8 @@
 #include <linux/pm.h>
 #include <linux/delay.h>
 #include <linux/slab.h>
+#include <linux/hrtimer.h>
+#include <linux/ktime.h>
 
 #define DRIVER_NAME	"rk3562-joystick"
 #define MOUSE_NAME	"rk3562-mouse"
@@ -135,6 +138,21 @@ struct rk3562_joystick {
 	struct gpio_desc *moto_gpio;
 	struct gpio_desc *moto_r_gpio;
 	bool rumble_on;
+
+	/*
+	 * Rumble strength. The motors hang on plain GPIOs and are either on or
+	 * off, so strength is a software PWM: on for rumble_on_ns of every
+	 * rumble_period_ns. rumble_on_ns == 0 means a steady state (fully on
+	 * or off, as rumble_on says). Only used when the motor GPIOs may be
+	 * driven from atomic context (rumble_pwm).
+	 */
+	struct hrtimer rumble_timer;
+	u64 rumble_period_ns;
+	u64 rumble_on_ns;
+	bool rumble_phase_on;
+	bool rumble_pwm;
+	bool rumble_motor_on;	/* what the motor GPIOs were last set to */
+	bool rumble_kick;	/* next on-phase is a full-power start kick */
 
 	/* Axis-to-dpad mode */
 	bool axis_to_dpad;
@@ -341,23 +359,138 @@ static void rk3562_cancel_gpio_work(void *data)
 
 /* --- Force feedback (rumble) --- */
 
+/*
+ * Software PWM of the rumble motors. The period is short enough for the
+ * motor to average it out, but at a reduced duty cycle such a short period
+ * does not start a stopped motor (it only clicks), so a PWM run that starts
+ * from rest begins with a full-power kick of rumble_kick_ms; after that the
+ * PWM only has to keep the motor turning, at lower speed. A long period
+ * would start it as well, but as a train of audible jolts. Below about half
+ * duty the RG52 Mini motors cannot be felt even when kicked, so the whole
+ * range of requests is mapped onto rumble_min_pct..100 % rather than cut
+ * off at the bottom: weak, medium and full requests stay distinguishable.
+ * Tried by hand on the device (15.10.2026): 50 % at a 10 or 5 ms period is
+ * felt and smooth, 30-40 % at 5-10 ms is not felt, 30-80 ms periods are
+ * felt as clicks. Android
+ * sends its default vibration amplitude (192 of 255) as 0xc000, and that is
+ * taken as full power, so ordinary vibration keeps its old strength and
+ * only the weaker requests get weaker. All three can be tuned at run time
+ * in /sys/module/rk3562_joystick/parameters; rumble_period_ms = 0 brings
+ * back plain on/off.
+ */
+static unsigned int rumble_period_ms = 5;
+module_param(rumble_period_ms, uint, 0644);
+MODULE_PARM_DESC(rumble_period_ms, "Rumble PWM period in ms, 0 = plain on/off");
+
+static unsigned int rumble_min_pct = 50;
+module_param(rumble_min_pct, uint, 0644);
+MODULE_PARM_DESC(rumble_min_pct, "Rumble duty cycle in percent for the weakest request");
+
+static unsigned int rumble_kick_ms = 50;
+module_param(rumble_kick_ms, uint, 0644);
+MODULE_PARM_DESC(rumble_kick_ms, "Full-power start of a PWM rumble from rest, ms");
+
+static unsigned int rumble_full_mag = 0xc000;
+module_param(rumble_full_mag, uint, 0644);
+MODULE_PARM_DESC(rumble_full_mag, "Rumble magnitude that runs the motors at full power");
+
+static void rk3562_set_motors(struct rk3562_joystick *joy, int on)
+{
+	joy->rumble_motor_on = on;
+	/* atomic-safe GPIOs when PWM is in use, see rumble_pwm */
+	if (joy->rumble_pwm) {
+		if (joy->moto_gpio)
+			gpiod_set_value(joy->moto_gpio, on);
+		if (joy->moto_r_gpio)
+			gpiod_set_value(joy->moto_r_gpio, on);
+	} else {
+		if (joy->moto_gpio)
+			gpiod_set_value_cansleep(joy->moto_gpio, on);
+		if (joy->moto_r_gpio)
+			gpiod_set_value_cansleep(joy->moto_r_gpio, on);
+	}
+}
+
+static enum hrtimer_restart rk3562_rumble_timer(struct hrtimer *t)
+{
+	struct rk3562_joystick *joy =
+		container_of(t, struct rk3562_joystick, rumble_timer);
+	u64 on_ns = READ_ONCE(joy->rumble_on_ns);
+	u64 period = READ_ONCE(joy->rumble_period_ns);
+
+	if (!on_ns || on_ns >= period) {
+		/* back to a steady state */
+		joy->rumble_phase_on = false;
+		rk3562_set_motors(joy, READ_ONCE(joy->rumble_on));
+		/* rk3562_play_effect() may have asked for PWM meanwhile */
+		on_ns = READ_ONCE(joy->rumble_on_ns);
+		period = READ_ONCE(joy->rumble_period_ns);
+		if (!on_ns || on_ns >= period)
+			return HRTIMER_NORESTART;
+	}
+
+	if (joy->rumble_phase_on) {
+		rk3562_set_motors(joy, 0);
+		joy->rumble_phase_on = false;
+		hrtimer_forward_now(t, ns_to_ktime(period - on_ns));
+	} else {
+		u64 dur = on_ns;
+
+		if (joy->rumble_kick) {
+			joy->rumble_kick = false;
+			dur = max_t(u64, on_ns, (u64)READ_ONCE(rumble_kick_ms) *
+					       NSEC_PER_MSEC);
+		}
+		rk3562_set_motors(joy, 1);
+		joy->rumble_phase_on = true;
+		hrtimer_forward_now(t, ns_to_ktime(dur));
+	}
+	return HRTIMER_RESTART;
+}
+
+/* Called by ff-memless in atomic context with the combined effect */
 static int rk3562_play_effect(struct input_dev *dev, void *data,
 			      struct ff_effect *effect)
 {
 	struct rk3562_joystick *joy = input_get_drvdata(dev);
-	bool on;
+	u32 mag = max(effect->u.rumble.strong_magnitude,
+		      effect->u.rumble.weak_magnitude);
+	u64 period = (u64)READ_ONCE(rumble_period_ms) * NSEC_PER_MSEC;
+	u32 full = max(READ_ONCE(rumble_full_mag), 1U);
+	u64 on_ns = 0;
 
-	on = effect->u.rumble.strong_magnitude ||
-	     effect->u.rumble.weak_magnitude;
+	joy->rumble_on = mag != 0;
 
-	joy->rumble_on = on;
+	if (mag && joy->rumble_pwm && period) {
+		u32 lo = min(READ_ONCE(rumble_min_pct), 100U);
+		u32 pct = lo + (100 - lo) * min(mag, full) / full;
 
-	if (joy->moto_gpio)
-		gpiod_set_value_cansleep(joy->moto_gpio, on);
-	if (joy->moto_r_gpio)
-		gpiod_set_value_cansleep(joy->moto_r_gpio, on);
+		if (pct < 100)
+			on_ns = div_u64(period * pct, 100);
+	}
+
+	WRITE_ONCE(joy->rumble_period_ns, period);
+	WRITE_ONCE(joy->rumble_on_ns, on_ns);
+
+	if (on_ns) {
+		if (!hrtimer_active(&joy->rumble_timer)) {
+			/* a stopped motor needs a kick to start at all */
+			joy->rumble_kick = !joy->rumble_motor_on;
+			hrtimer_start(&joy->rumble_timer, 0, HRTIMER_MODE_REL);
+		}
+	} else {
+		/* steady; a running PWM timer sees on_ns == 0 and stops */
+		rk3562_set_motors(joy, joy->rumble_on);
+	}
 
 	return 0;
+}
+
+static void rk3562_cancel_rumble(void *data)
+{
+	struct rk3562_joystick *joy = data;
+
+	hrtimer_cancel(&joy->rumble_timer);
 }
 
 /* --- Axis-to-dpad sysfs --- */
@@ -814,6 +947,10 @@ static int rk3562_suspend(struct device *dev)
 	struct rk3562_joystick *joy = dev_get_drvdata(dev);
 
 	/* Turn off motors on suspend */
+	if (joy->moto_gpio || joy->moto_r_gpio)
+		hrtimer_cancel(&joy->rumble_timer);
+	joy->rumble_phase_on = false;
+	joy->rumble_motor_on = false;
 	if (joy->moto_gpio)
 		gpiod_set_value_cansleep(joy->moto_gpio, 0);
 	if (joy->moto_r_gpio)
@@ -828,10 +965,15 @@ static int rk3562_resume(struct device *dev)
 
 	/* Restore rumble state */
 	if (joy->rumble_on) {
-		if (joy->moto_gpio)
-			gpiod_set_value_cansleep(joy->moto_gpio, 1);
-		if (joy->moto_r_gpio)
-			gpiod_set_value_cansleep(joy->moto_r_gpio, 1);
+		if (READ_ONCE(joy->rumble_on_ns)) {
+			joy->rumble_kick = true;
+			hrtimer_start(&joy->rumble_timer, 0, HRTIMER_MODE_REL);
+		} else {
+			if (joy->moto_gpio)
+				gpiod_set_value_cansleep(joy->moto_gpio, 1);
+			if (joy->moto_r_gpio)
+				gpiod_set_value_cansleep(joy->moto_r_gpio, 1);
+		}
 	}
 
 	return 0;
@@ -1126,6 +1268,17 @@ static int rk3562_probe(struct platform_device *pdev)
 
 	/* Setup force feedback if motors are present */
 	if (joy->moto_gpio || joy->moto_r_gpio) {
+		/* PWM from a timer needs GPIOs that do not sleep */
+		joy->rumble_pwm =
+			(!joy->moto_gpio || !gpiod_cansleep(joy->moto_gpio)) &&
+			(!joy->moto_r_gpio || !gpiod_cansleep(joy->moto_r_gpio));
+		hrtimer_init(&joy->rumble_timer, CLOCK_MONOTONIC,
+			     HRTIMER_MODE_REL);
+		joy->rumble_timer.function = rk3562_rumble_timer;
+		ret = devm_add_action_or_reset(dev, rk3562_cancel_rumble, joy);
+		if (ret)
+			return ret;
+
 		input_set_capability(input, EV_FF, FF_RUMBLE);
 		ret = input_ff_create_memless(input, NULL,
 					      rk3562_play_effect);
