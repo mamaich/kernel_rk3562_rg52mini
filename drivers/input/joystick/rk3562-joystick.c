@@ -83,9 +83,18 @@
 #define TRIG_FLAT_CALIBRATED	512
 #define TRIG_FUZZ_CALIBRATED	64
 
-/* DTS key codes that need remapping to BTN_* range for joydev visibility */
+/* DTS key codes of the HOME and FN/BACK buttons, see rk3562_remap_code() */
 #define KEY_HOME_DTS	102
 #define KEY_FN_DTS	464
+
+/*
+ * Codes the HOME and BACK buttons are reported with. They are the keys
+ * Android's Generic.kl knows as HOME and BACK, so the buttons work without
+ * any remapping (the vendor kernel used BTN_MODE and BTN_TRIGGER_HAPPY1 here,
+ * and the system had to remap them for every gamepad).
+ */
+#define RK3562_CODE_HOME	KEY_HOMEPAGE
+#define RK3562_CODE_BACK	KEY_BACK
 
 struct rk3562_joystick;
 
@@ -202,14 +211,19 @@ static const unsigned int stick_abs_codes[NUM_STICK_CHANS] = {
 	ABS_X, ABS_Y, ABS_RX, ABS_RY,
 };
 
-/* Axis ABS codes for triggers.
+/* Axis ABS codes for triggers, in trig_chan_names order (L2, R2).
  *
  * V160: changed from ABS_HAT2Y/ABS_HAT2X to ABS_Z/ABS_BRAKE (0x02/0x05)
  * to match a real Xbox 360 pad's axis set. GTA:SA profiles gate on
  * motion range axis codes — ABS_Z/ABS_BRAKE enables the full Xbox 360
- * profile (including SELECT→camera binding). */
+ * profile (including SELECT→camera binding).
+ *
+ * RG52 Mini: L2 is ABS_BRAKE and R2 ABS_GAS, as on an Xbox pad and in
+ * Android (AXIS_BRAKE is the left trigger). The vendor table had them the
+ * other way round, and the system swapped them back for every gamepad,
+ * external ones included. */
 static const unsigned int trig_abs_codes[NUM_TRIG_CHANS] = {
-	ABS_GAS, ABS_BRAKE,
+	ABS_BRAKE, ABS_GAS,
 };
 
 /*
@@ -571,13 +585,13 @@ static ssize_t swap_start_home_store(struct device *dev,
 	if (val != joy->swap_start_home) {
 		/* Pairwise swap: START↔BACK, SELECT↔HOME/FN */
 		joy->gpio_btns[joy->swap_indices[0]].code =
-			val ? BTN_TRIGGER_HAPPY1 : BTN_START;     /* START → BACK */
+			val ? RK3562_CODE_BACK : BTN_START;     /* START → BACK */
 		joy->gpio_btns[joy->swap_indices[1]].code =
-			val ? BTN_MODE : BTN_SELECT;   /* SELECT → HOME/FN */
+			val ? RK3562_CODE_HOME : BTN_SELECT;   /* SELECT → HOME/FN */
 		joy->gpio_btns[joy->swap_indices[2]].code =
-			val ? BTN_SELECT : BTN_MODE;   /* HOME/FN → SELECT */
+			val ? BTN_SELECT : RK3562_CODE_HOME;   /* HOME/FN → SELECT */
 		joy->gpio_btns[joy->swap_indices[3]].code =
-			val ? BTN_START : BTN_TRIGGER_HAPPY1;     /* BACK → START */
+			val ? BTN_START : RK3562_CODE_BACK;     /* BACK → START */
 		joy->swap_start_home = val;
 	}
 
@@ -917,24 +931,22 @@ static int rk3562_parse_adc_buttons(struct rk3562_joystick *joy,
 }
 
 /*
- * Remap DTS key codes that fall outside the BTN_* range (and would be
- * invisible to joydev) into joydev-visible BTN_* codes.
+ * Report the HOME and FN/BACK buttons from the DTS as the keys they are
+ * on this device: KEY_HOMEPAGE and KEY_BACK (RK3562_CODE_HOME/BACK).
  *
- * KEY_HOME -> BTN_MODE (the SDL Guide button).
- * KEY_FN   -> BTN_TRIGGER_HAPPY1: a generic "extra button" slot in the
- *             BTN_TRIGGER_HAPPY1..40 range (evdev 0x2c0..0x2e7) that the
- *             kernel input subsystem reserves for buttons that don't fit
- *             the standard gamepad layout.  Avoids overloading BTN_TL2
- *             (the canonical Left Trigger 2 code) for an unrelated
- *             function button.
+ * The vendor kernel moved them into the BTN_* range for joydev instead:
+ * KEY_HOME -> BTN_MODE (the SDL Guide button), KEY_FN -> BTN_TRIGGER_HAPPY1.
+ * Android does not read joydev, and Generic.kl has no HOME for BTN_MODE and
+ * nothing at all for BTN_TRIGGER_HAPPY1, so neither button worked there
+ * without a system-wide remap.
  */
 static unsigned int rk3562_remap_code(unsigned int dts_code)
 {
 	switch (dts_code) {
 	case KEY_HOME_DTS:
-		return BTN_MODE;            /* 0x13c -- HOME -> Guide */
+		return RK3562_CODE_HOME;    /* 0xac -- HOME */
 	case KEY_FN_DTS:
-		return BTN_TRIGGER_HAPPY1;  /* 0x2c0 -- FN/BACK -> extra btn */
+		return RK3562_CODE_BACK;    /* 0x9e -- FN/BACK -> BACK */
 	default:
 		return dts_code;
 	}
@@ -1169,7 +1181,7 @@ static int rk3562_probe(struct platform_device *pdev)
 	/* --- Locate swappable buttons for Start/Select <-> HOME/BACK --- */
 	{
 		static const unsigned int swap_codes[4] = {
-			BTN_START, BTN_SELECT, BTN_MODE, BTN_TRIGGER_HAPPY1,
+			BTN_START, BTN_SELECT, RK3562_CODE_HOME, RK3562_CODE_BACK,
 		};
 		int found = 0;
 
@@ -1190,7 +1202,7 @@ static int rk3562_probe(struct platform_device *pdev)
 
 		joy->swap_available = (found == 4);
 		if (joy->swap_available)
-			dev_info(dev, "Button swap available (START=%d SELECT=%d MODE=%d HAPPY1=%d)\n",
+			dev_info(dev, "Button swap available (START=%d SELECT=%d HOME=%d BACK=%d)\n",
 				 joy->swap_indices[0], joy->swap_indices[1],
 				 joy->swap_indices[2], joy->swap_indices[3]);
 		else
@@ -1253,11 +1265,12 @@ static int rk3562_probe(struct platform_device *pdev)
 	for (i = 0; i < NUM_ADC_BTNS; i++)
 		input_set_capability(input, EV_KEY, joy->adc_btn_codes[i]);
 
-	/* Register BTN_MODE so joydev places HOME/BACK after SELECT/START
-	 * in the button map.  V156: BTN_TL2 and BTN_TR2 are intentionally
-	 * NOT registered — omitting them shifts BTN_SELECT from joydev
-	 * index 8 to index 6, matching the Microsoft X-Box 360 pad layout
-	 * (GTA:SA reads buttons by joydev index). */
+	/* Register BTN_MODE so joydev keeps the X-Box 360 button map (a Guide
+	 * button after SELECT/START), although HOME is reported as
+	 * KEY_HOMEPAGE now and BTN_MODE never fires.  V156: BTN_TL2 and
+	 * BTN_TR2 are intentionally NOT registered — omitting them shifts
+	 * BTN_SELECT from joydev index 8 to index 6, matching the Microsoft
+	 * X-Box 360 pad layout (GTA:SA reads buttons by joydev index). */
 	input_set_capability(input, EV_KEY, BTN_MODE);
 
 	/* Register dpad button capabilities (for axis-to-dpad mode) */
