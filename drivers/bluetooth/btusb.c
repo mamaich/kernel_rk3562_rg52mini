@@ -471,10 +471,37 @@ static const struct usb_device_id blacklist_table[] = {
 
 	/* Additional Realtek 8723BU Bluetooth devices */
 	{ USB_DEVICE(0x7392, 0xa611), .driver_info = BTUSB_REALTEK },
+	{ USB_DEVICE(0x2c0a, 0x8761), .driver_info = BTUSB_REALTEK },
 
 	/* Additional Realtek 8723DE Bluetooth devices */
 	{ USB_DEVICE(0x0bda, 0xb009), .driver_info = BTUSB_REALTEK },
 	{ USB_DEVICE(0x2ff8, 0xb011), .driver_info = BTUSB_REALTEK },
+
+	/* Additional Realtek 8761BUV Bluetooth devices (USB dongles, from
+	 * mainline; 0bda:8771 is already covered by the Realtek vendor match)
+	 */
+	{ USB_DEVICE(0x2c4e, 0x0115), .driver_info = BTUSB_REALTEK |
+						     BTUSB_WIDEBAND_SPEECH },
+	{ USB_DEVICE(0x2357, 0x0604), .driver_info = BTUSB_REALTEK |
+						     BTUSB_WIDEBAND_SPEECH },
+	{ USB_DEVICE(0x2357, 0x0607), .driver_info = BTUSB_REALTEK |
+						     BTUSB_WIDEBAND_SPEECH },
+	{ USB_DEVICE(0x0b05, 0x190e), .driver_info = BTUSB_REALTEK |
+						     BTUSB_WIDEBAND_SPEECH },
+	{ USB_DEVICE(0x2550, 0x8761), .driver_info = BTUSB_REALTEK |
+						     BTUSB_WIDEBAND_SPEECH },
+	{ USB_DEVICE(0x6655, 0x8771), .driver_info = BTUSB_REALTEK |
+						     BTUSB_WIDEBAND_SPEECH },
+	{ USB_DEVICE(0x7392, 0xc611), .driver_info = BTUSB_REALTEK |
+						     BTUSB_WIDEBAND_SPEECH },
+	{ USB_DEVICE(0x2b89, 0x8761), .driver_info = BTUSB_REALTEK |
+						     BTUSB_WIDEBAND_SPEECH },
+	{ USB_DEVICE(0x2b89, 0x6275), .driver_info = BTUSB_REALTEK |
+						     BTUSB_WIDEBAND_SPEECH },
+	{ USB_DEVICE(0x37ad, 0x0600), .driver_info = BTUSB_REALTEK |
+						     BTUSB_WIDEBAND_SPEECH },
+	{ USB_DEVICE(0x14b0, 0x047a), .driver_info = BTUSB_REALTEK |
+						     BTUSB_WIDEBAND_SPEECH },
 
 	/* Additional Realtek 8821AE Bluetooth devices */
 	{ USB_DEVICE(0x0b05, 0x17dc), .driver_info = BTUSB_REALTEK },
@@ -1937,6 +1964,55 @@ static int btusb_setup_csr(struct hci_dev *hdev)
 	kfree_skb(skb);
 
 	return 0;
+}
+
+/* RG52 Mini: Realtek dongles are sold under many vendors' USB IDs, and one
+ * that is missing from the tables above binds through the generic class match
+ * and stays on its ROM firmware. For such devices ask the controller who made
+ * it and, if it is Realtek (manufacturer 93), do what BTUSB_REALTEK would do.
+ */
+static int btusb_setup_generic(struct hci_dev *hdev)
+{
+	struct btusb_data *data = hci_get_drvdata(hdev);
+	struct hci_rp_read_local_version *rp;
+	struct sk_buff *skb;
+	u16 manufacturer;
+	int err;
+
+	skb = __hci_cmd_sync(hdev, HCI_OP_READ_LOCAL_VERSION, 0, NULL,
+			     HCI_INIT_TIMEOUT);
+	if (IS_ERR(skb))
+		return 0;	/* let the normal init report it */
+
+	if (skb->len != sizeof(struct hci_rp_read_local_version)) {
+		kfree_skb(skb);
+		return 0;
+	}
+
+	rp = (struct hci_rp_read_local_version *)skb->data;
+	manufacturer = le16_to_cpu(rp->manufacturer);
+	kfree_skb(skb);
+
+	if (manufacturer != 93)
+		return 0;
+
+	bt_dev_info(hdev, "Realtek controller on a generic USB ID %04x:%04x, setting it up as Realtek",
+		    le16_to_cpu(data->udev->descriptor.idVendor),
+		    le16_to_cpu(data->udev->descriptor.idProduct));
+
+	hdev->shutdown = btrtl_shutdown_realtek;
+	hdev->cmd_timeout = btusb_rtl_cmd_timeout;
+	set_bit(BTUSB_WAKEUP_DISABLE, &data->flags);
+	set_bit(BTUSB_USE_ALT3_FOR_WBS, &data->flags);
+
+	err = btrtl_setup_realtek(hdev);
+	if (err == -ENOENT) {
+		/* No firmware file: keep the ROM firmware, as before */
+		bt_dev_warn(hdev, "Realtek firmware not found, staying on ROM firmware");
+		return 0;
+	}
+
+	return err;
 }
 
 static const struct firmware *btusb_setup_intel_get_fw(struct hci_dev *hdev,
@@ -4268,6 +4344,12 @@ static int btusb_probe(struct usb_interface *intf,
 		set_bit(BTUSB_WAKEUP_DISABLE, &data->flags);
 		set_bit(BTUSB_USE_ALT3_FOR_WBS, &data->flags);
 	}
+
+	/* RG52 Mini: a device known only by its USB class may still be
+	 * a Realtek dongle, see btusb_setup_generic()
+	 */
+	if (IS_ENABLED(CONFIG_BT_HCIBTUSB_RTL) && !id->driver_info)
+		hdev->setup = btusb_setup_generic;
 
 	if (!reset)
 		set_bit(HCI_QUIRK_RESET_ON_CLOSE, &hdev->quirks);
