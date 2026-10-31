@@ -2144,6 +2144,16 @@ static int __must_check ffs_do_single_desc(char *data, unsigned len,
 			if (length != sizeof(struct ccid_descriptor))
 				goto inv_length;
 			break;
+		} else if (*current_class == USB_CLASS_VENDOR_SPEC) {
+			/*
+			 * RG52 Mini: a class descriptor of a vendor class
+			 * interface, passed on as it is: the 0x21 descriptor
+			 * of a wired Xbox 360 controller (rg52-xpad), without
+			 * which the Windows driver installs but XInput never
+			 * sees the controller.
+			 */
+			pr_vdebug("vendor class descriptor\n");
+			break;
 		} else {
 			pr_vdebug("unknown descriptor: %d for class %d\n",
 			      _ds->bDescriptorType, *current_class);
@@ -3406,6 +3416,14 @@ static int ffs_func_setup(struct usb_function *f,
 		break;
 
 	default:
+		/*
+		 * RG52 Mini: android_setup (configfs.c) offers every request
+		 * to the functions before composite_setup, so the standard
+		 * device requests (GET_DESCRIPTOR, SET_CONFIGURATION...) must
+		 * stay with composite even under FUNCTIONFS_ALL_CTRL_RECIP.
+		 */
+		if ((creq->bRequestType & USB_TYPE_MASK) == USB_TYPE_STANDARD)
+			return -EOPNOTSUPP;
 		if (func->ffs->user_flags & FUNCTIONFS_ALL_CTRL_RECIP)
 			ret = le16_to_cpu(creq->wIndex);
 		else
