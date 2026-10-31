@@ -252,6 +252,9 @@ struct rockchip_usb2phy_cfg {
  * @bypass_uart_en: usb bypass uart enable, passed from DT.
  * @host_disconnect: usb host disconnect status.
  * @dis_u2_susphy: disable usb2 phy suspend.
+ * @vbus_hold: RG52 Mini: the controller's bvalid is held high from the GRF
+ *	   for a peripheral session, see rg52_vbus_hold_check().
+ * @vbus_lost_at: jiffies when the charger last lost VBUS under the hold, 0 if it has VBUS.
  * @bvalid_irq: IRQ number assigned for vbus valid rise detection.
  * @ls_irq: IRQ number assigned for linestate detection.
  * @id_irq: IRQ number assigned for id fall or rise detection.
@@ -285,6 +288,8 @@ struct rockchip_usb2phy_port {
 	bool		bypass_uart_en;
 	bool		host_disconnect;
 	bool		dis_u2_susphy;
+	bool		vbus_hold;
+	unsigned long	vbus_lost_at;
 	int		bvalid_irq;
 	int		ls_irq;
 	int             id_irq;
@@ -1206,6 +1211,129 @@ static struct attribute_group usb2_phy_attr_group = {
 	.attrs = usb2_phy_attrs,
 };
 
+/*
+ * RG52 Mini: a VBUS dip must not end a live peripheral session.
+ *
+ * Without a Type-C controller (board revision A) the otg port learns about
+ * the cable only from VBUS: this work polls bvalid once a second, and on a
+ * miss it powers the phy down and runs the charger detection again, while
+ * the controller, which takes its bvalid from the same VBUSDET comparator,
+ * ends the session by itself. A loose cable, or VBUS sagging at the start of
+ * a big transfer, then drops the computer's connection although the data
+ * lines never went away.
+ *
+ * So for a peripheral session (SDP/CDP) the controller's bvalid is held high
+ * from the GRF, and while it is held the PMIC charger ("usb" power supply,
+ * which has its own VBUS sense) tells whether VBUS is there: a loss shorter
+ * than RG52_VBUS_HOLD_MS keeps the session, a longer one is an unplug, the
+ * hold is lifted and the comparator ends the session as before. The bus lines
+ * cannot tell the two apart: after a real unplug under the hold they stayed
+ * at SE0, the controller never saw the unplug, and the computer did not see
+ * the console again when the cable came back.
+ * rg52_vbus_hold=0 restores the stock behaviour.
+ */
+#define RG52_VBUS_HOLD_MS	2000
+
+static bool rg52_vbus_hold = true;
+module_param(rg52_vbus_hold, bool, 0644);
+MODULE_PARM_DESC(rg52_vbus_hold, "keep a USB peripheral session over VBUS losses shorter than 2 s");
+
+static struct power_supply *rg52_usb_psy;
+
+static bool rockchip_usb2phy_read_vbus(struct rockchip_usb2phy *rphy,
+				       struct rockchip_usb2phy_port *rport)
+{
+	if (rport->port_cfg->bvalid_grf_con.enable && rport->typec_vbus_det)
+		return property_enabled(rphy->grf, &rport->port_cfg->bvalid_grf_con);
+	if (rport->utmi_avalid)
+		return property_enabled(rphy->grf, &rport->port_cfg->utmi_avalid);
+	return property_enabled(rphy->grf, &rport->port_cfg->utmi_bvalid);
+}
+
+static void rg52_vbus_hold_set(struct rockchip_usb2phy *rphy,
+			       struct rockchip_usb2phy_port *rport, bool on)
+{
+	if (rport->vbus_hold == on)
+		return;
+	property_enable(get_reg_base(rphy), &rport->port_cfg->bvalid_grf_sel, on);
+	rport->vbus_hold = on;
+	rport->vbus_lost_at = 0;
+}
+
+/* VBUS as the charger sees it, independent of the hold: 1, 0, or -1 when unknown. */
+static int rg52_charger_vbus(void)
+{
+	union power_supply_propval val;
+
+	if (!rg52_usb_psy)
+		rg52_usb_psy = power_supply_get_by_name("usb");
+	if (!rg52_usb_psy ||
+	    power_supply_get_property(rg52_usb_psy, POWER_SUPPLY_PROP_ONLINE, &val))
+		return -1;
+	return !!val.intval;
+}
+
+static void rg52_vbus_hold_start(struct rockchip_usb2phy *rphy,
+				 struct rockchip_usb2phy_port *rport)
+{
+	if (!rg52_vbus_hold || rport->vbus_always_on || rport->typec_vbus_det ||
+	    !rport->port_cfg->bvalid_grf_sel.enable || rg52_charger_vbus() != 1)
+		return;
+	rg52_vbus_hold_set(rphy, rport, true);
+}
+
+/* Drop the hold and read the comparator, which then also reaches the controller. */
+static bool rg52_vbus_hold_release(struct rockchip_usb2phy *rphy,
+				   struct rockchip_usb2phy_port *rport)
+{
+	rg52_vbus_hold_set(rphy, rport, false);
+	udelay(10);
+	return rockchip_usb2phy_read_vbus(rphy, rport);
+}
+
+/*
+ * Called in OTG_STATE_B_PERIPHERAL with the VBUS state just read. Returns the
+ * VBUS state the state machine should act on. While the hold is off @vbus is
+ * the comparator itself; while it is on the comparator reads as held, so the
+ * charger is asked instead.
+ */
+static bool rg52_vbus_hold_check(struct rockchip_usb2phy *rphy,
+				 struct rockchip_usb2phy_port *rport, bool vbus)
+{
+	int chg;
+
+	if (!rport->vbus_hold) {
+		/* the parameter came back on during a session */
+		if (rg52_vbus_hold && vbus)
+			rg52_vbus_hold_start(rphy, rport);
+		return vbus;
+	}
+	if (!rg52_vbus_hold)
+		return rg52_vbus_hold_release(rphy, rport);
+
+	chg = rg52_charger_vbus();
+	if (chg < 0)
+		return rg52_vbus_hold_release(rphy, rport);
+	if (chg) {
+		if (rport->vbus_lost_at) {
+			dev_info(&rport->phy->dev, "VBUS back after %u ms, USB session kept\n",
+				 jiffies_to_msecs(jiffies - rport->vbus_lost_at));
+			rport->vbus_lost_at = 0;
+		}
+		return true;
+	}
+	if (!rport->vbus_lost_at) {
+		rport->vbus_lost_at = jiffies ? jiffies : 1;
+		dev_info(&rport->phy->dev, "VBUS lost, holding the USB session for up to %d ms\n",
+			 RG52_VBUS_HOLD_MS);
+		return true;
+	}
+	if (time_before(jiffies, rport->vbus_lost_at + msecs_to_jiffies(RG52_VBUS_HOLD_MS)))
+		return true;
+	dev_info(&rport->phy->dev, "VBUS lost for %d ms: unplugged\n", RG52_VBUS_HOLD_MS);
+	return rg52_vbus_hold_release(rphy, rport);
+}
+
 static void rockchip_usb2phy_otg_sm_work(struct work_struct *work)
 {
 	struct rockchip_usb2phy_port *rport =
@@ -1218,15 +1346,7 @@ static void rockchip_usb2phy_otg_sm_work(struct work_struct *work)
 
 	mutex_lock(&rport->mutex);
 
-	if (rport->port_cfg->bvalid_grf_con.enable && rport->typec_vbus_det)
-		rport->vbus_attached =
-			property_enabled(rphy->grf, &rport->port_cfg->bvalid_grf_con);
-	else if (rport->utmi_avalid)
-		rport->vbus_attached =
-			property_enabled(rphy->grf, &rport->port_cfg->utmi_avalid);
-	else
-		rport->vbus_attached =
-			property_enabled(rphy->grf, &rport->port_cfg->utmi_bvalid);
+	rport->vbus_attached = rockchip_usb2phy_read_vbus(rphy, rport);
 
 	sch_work = false;
 	delay = OTG_SCHEDULE_DELAY;
@@ -1245,6 +1365,7 @@ static void rockchip_usb2phy_otg_sm_work(struct work_struct *work)
 		}
 		fallthrough;
 	case OTG_STATE_B_IDLE:
+		rg52_vbus_hold_set(rphy, rport, false);
 		if (extcon_get_state(rphy->edev, EXTCON_USB_HOST) > 0 ||
 		    extcon_get_state(rphy->edev, EXTCON_USB_VBUS_EN) > 0) {
 			dev_dbg(&rport->phy->dev, "usb otg host connect\n");
@@ -1276,6 +1397,7 @@ static void rockchip_usb2phy_otg_sm_work(struct work_struct *work)
 					mutex_lock(&rport->mutex);
 					rport->state = OTG_STATE_B_PERIPHERAL;
 					rport->perip_connected = true;
+					rg52_vbus_hold_start(rphy, rport);
 					sch_work = true;
 					break;
 				case POWER_SUPPLY_TYPE_USB_DCP:
@@ -1292,6 +1414,7 @@ static void rockchip_usb2phy_otg_sm_work(struct work_struct *work)
 					mutex_lock(&rport->mutex);
 					rport->state = OTG_STATE_B_PERIPHERAL;
 					rport->perip_connected = true;
+					rg52_vbus_hold_start(rphy, rport);
 					sch_work = true;
 					break;
 				default:
@@ -1313,11 +1436,17 @@ static void rockchip_usb2phy_otg_sm_work(struct work_struct *work)
 		break;
 	case OTG_STATE_B_PERIPHERAL:
 		sch_work = true;
+		rport->vbus_attached = rg52_vbus_hold_check(rphy, rport,
+							    rport->vbus_attached);
+		/* while VBUS is missing under the hold, decide within ~250 ms of the limit */
+		if (rport->vbus_lost_at)
+			delay = msecs_to_jiffies(250);
 
 		if (extcon_get_state(rphy->edev, EXTCON_USB_HOST) > 0 ||
 		    extcon_get_state(rphy->edev,
 					    EXTCON_USB_VBUS_EN) > 0) {
 			dev_dbg(&rport->phy->dev, "usb otg host connect\n");
+			rg52_vbus_hold_set(rphy, rport, false);
 			rport->state = OTG_STATE_A_HOST;
 			rphy->chg_state = USB_CHG_STATE_UNDEFINED;
 			rphy->chg_type = POWER_SUPPLY_TYPE_UNKNOWN;
@@ -1326,6 +1455,7 @@ static void rockchip_usb2phy_otg_sm_work(struct work_struct *work)
 			wake_unlock(&rport->wakelock);
 		} else if (!rport->vbus_attached) {
 			dev_dbg(&rport->phy->dev, "usb disconnect\n");
+			rg52_vbus_hold_set(rphy, rport, false);
 			rport->state = OTG_STATE_B_IDLE;
 			rport->perip_connected = false;
 			rphy->chg_state = USB_CHG_STATE_UNDEFINED;
