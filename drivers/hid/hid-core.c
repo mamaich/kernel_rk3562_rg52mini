@@ -2399,6 +2399,30 @@ struct bus_type hid_bus_type = {
 };
 EXPORT_SYMBOL(hid_bus_type);
 
+/*
+ * RG52 Mini: RetroArch for Android takes every input device whose name contains
+ * "Android Gamepad" (a case-sensitive strstr in handle_hotplug(),
+ * input/drivers/android_input.c) for the built-in controls of a Sony Xperia Play:
+ * it renames it "XPERIA Play", forces it onto port 1 and drops the next such
+ * device. Cheap pads are often called that ("SHANWAN Android Gamepad"), and a
+ * second player could not use them. Lowercase the G; the pad is still found by
+ * vendor/product everywhere else.
+ */
+static void hid_rg52_fix_name(struct hid_device *hdev)
+{
+	static const char needle[] = "Android Gamepad";
+	char *p = strstr(hdev->name, needle);
+
+	if (!p)
+		return;
+	do {
+		p[sizeof("Android ") - 1] = 'g';
+		p = strstr(p + sizeof(needle) - 1, needle);
+	} while (p);
+	pr_info("%04X:%04X named \"%s\" (Android Gamepad -> gamepad)\n",
+		hdev->vendor, hdev->product, hdev->name);
+}
+
 int hid_add_device(struct hid_device *hdev)
 {
 	static atomic_t id = ATOMIC_INIT(0);
@@ -2408,6 +2432,7 @@ int hid_add_device(struct hid_device *hdev)
 		return -EBUSY;
 
 	hdev->quirks = hid_lookup_quirk(hdev);
+	hid_rg52_fix_name(hdev);
 
 	/* we need to kill them here, otherwise they will stay allocated to
 	 * wait for coming driver */
