@@ -135,6 +135,10 @@ struct rk3562_joystick {
 	int trig_min_uv;
 	int trig_max_uv[NUM_TRIG_CHANS];  /* per-trigger resting voltage */
 
+	/* Polls in a row each axis has been off rest, see rk3562_rest_filter() */
+	unsigned int stick_off_rest[NUM_STICK_CHANS];
+	unsigned int trig_off_rest[NUM_TRIG_CHANS];
+
 	/* Axis X/Y swap flags */
 	bool l_xy_swap;
 	bool r_xy_swap;
@@ -639,6 +643,37 @@ ATTRIBUTE_GROUPS(rk3562);
 
 /* --- Poll function --- */
 
+/*
+ * Knock filter. Picking the console up or putting it down on a table swings
+ * a stick cap past its dead zone for a single poll (seen on the RG52 Mini
+ * right stick, 07.11.2026: one reading of about 13 % of full deflection,
+ * back at rest on the next poll). Android takes every such event as user
+ * activity and restarts the screen-off timer. So an axis that leaves its
+ * rest position (0 after the dead zone) is reported only once it has stayed
+ * off rest for more than rest_glitch_polls polls in a row; until then it
+ * still reads as rest. A movement that has started is reported as is, and
+ * the return to rest is never delayed. The cost is rest_glitch_polls poll
+ * intervals at the start of a movement. Can be changed at run time in
+ * /sys/module/rk3562_joystick/parameters; 0 turns the filter off.
+ */
+static unsigned int rest_glitch_polls = 1;
+module_param(rest_glitch_polls, uint, 0644);
+MODULE_PARM_DESC(rest_glitch_polls,
+		 "Polls an axis must stay off rest before it is reported, 0 = off");
+
+static int rk3562_rest_filter(unsigned int *off_rest, int val)
+{
+	if (!val) {
+		*off_rest = 0;
+		return 0;
+	}
+	if (*off_rest < READ_ONCE(rest_glitch_polls)) {
+		(*off_rest)++;
+		return 0;
+	}
+	return val;
+}
+
 static void rk3562_poll(struct input_dev *input)
 {
 	struct rk3562_joystick *joy = input_get_drvdata(input);
@@ -659,7 +694,8 @@ static void rk3562_poll(struct input_dev *input)
 		/* iio_read_channel_processed returns millivolts; convert to uV */
 		raw *= 1000;
 
-		stick_vals[i] = rk3562_map_stick(joy, raw, i);
+		stick_vals[i] = rk3562_rest_filter(&joy->stick_off_rest[i],
+						   rk3562_map_stick(joy, raw, i));
 	}
 
 	/* Step 2: Read and report triggers */
@@ -670,7 +706,8 @@ static void rk3562_poll(struct input_dev *input)
 
 		raw *= 1000;
 		input_report_abs(input, trig_abs_codes[i],
-				 rk3562_map_trigger(joy, raw, i));
+				 rk3562_rest_filter(&joy->trig_off_rest[i],
+						    rk3562_map_trigger(joy, raw, i)));
 	}
 
 	/* Step 3: Read and report ADC-threshold buttons */
